@@ -55,8 +55,30 @@ resource "aws_security_group" "web_sg" {
   }
 }
 
+# Берём самую свежую Ubuntu 22.04 LTS (Jammy) в регионе eu-north-1
+data "aws_ami" "ubuntu_22_04" {
+  most_recent = true
+  owners      = ["099720109477"] # Canonical
+
+  filter {
+    name   = "name"
+    values = ["ubuntu/images/hvm-ssd/ubuntu-jammy-22.04-amd64-server-*"]
+  }
+
+  filter {
+    name   = "virtualization-type"
+    values = ["hvm"]
+  }
+
+  filter {
+    name   = "root-device-type"
+    values = ["ebs"]
+  }
+}
+
+
 resource "aws_instance" "web" {
-  ami                         = "ami-0669b163befffbdfc" # Ubuntu 22.04 LTS (eu-north-1)
+  ami                         = data.aws_ami.ubuntu_22_04.id
   instance_type               = "t3.small"
   vpc_security_group_ids      = [aws_security_group.web_sg.id]
   associate_public_ip_address = true
