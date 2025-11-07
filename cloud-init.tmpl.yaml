@@ -5,6 +5,7 @@ packages:
   - nginx
   - unzip
   - curl
+  - rsync
   - php-fpm
   - php-mysql
   - php-xml
@@ -14,6 +15,7 @@ packages:
   - mariadb-server
 
 write_files:
+  # nginx vhost
   - path: /etc/nginx/sites-available/wordpress
     owner: root:root
     permissions: '0644'
@@ -39,41 +41,53 @@ write_files:
           }
       }
 
+  # единый скрипт провижининга (один процесс → нет потери переменных)
+  - path: /usr/local/bin/provision-wp.sh
+    owner: root:root
+    permissions: '0755'
+    content: |
+      #!/usr/bin/env bash
+      set -euxo pipefail
+
+      # nginx + php-fpm
+      ln -sf /etc/nginx/sites-available/wordpress /etc/nginx/sites-enabled/wordpress
+      rm -f /etc/nginx/sites-enabled/default
+      systemctl enable --now nginx
+      systemctl enable --now php-fpm || systemctl enable --now php8.1-fpm || systemctl enable --now php8.2-fpm || systemctl enable --now php8.3-fpm
+
+      # чистим заглушку и кладём WP
+      rm -f /var/www/html/index.nginx-debian.html || true
+      mkdir -p /var/www/html
+      TMPDIR="$(mktemp -d)"
+      curl -fSL --retry 5 --retry-connrefused -o "$TMPDIR/latest.zip" https://wordpress.org/latest.zip
+      unzip -q "$TMPDIR/latest.zip" -d "$TMPDIR"
+      rsync -a "$TMPDIR/wordpress/" /var/www/html/
+      rm -rf "$TMPDIR"
+
+      # права
+      chown -R www-data:www-data /var/www/html
+      find /var/www/html -type d -exec chmod 755 {} \;
+      find /var/www/html -type f -exec chmod 644 {} \;
+
+      # MariaDB и ожидание готовности
+      systemctl enable --now mariadb
+      for i in {1..30}; do mysqladmin ping --silent && break; sleep 2; done
+
+      # БД и пользователь
+      mysql -e "CREATE DATABASE IF NOT EXISTS \`${db_name}\` DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
+      mysql -e "CREATE USER IF NOT EXISTS '${db_user}'@'localhost' IDENTIFIED BY '${db_pass}';"
+      mysql -e "GRANT ALL PRIVILEGES ON \`${db_name}\`.* TO '${db_user}'@'localhost'; FLUSH PRIVILEGES;"
+
+      # wp-config
+      cp -n /var/www/html/wp-config-sample.php /var/www/html/wp-config.php
+      sed -i "s/database_name_here/${db_name}/" /var/www/html/wp-config.php
+      sed -i "s/username_here/${db_user}/" /var/www/html/wp-config.php
+      sed -i "s/password_here/${db_pass}/" /var/www/html/wp-config.php
+      sed -i "s/localhost/${db_host}/" /var/www/html/wp-config.php
+      chown www-data:www-data /var/www/html/wp-config.php
+      chmod 640 /var/www/html/wp-config.php
+
+      systemctl reload nginx
+
 runcmd:
-  - mkdir -p /var/www/html
-  - cd /var/www/html
-  - curl -LO https://wordpress.org/latest.zip
-  - unzip -o latest.zip
-  - mv -f wordpress/* .
-  - rm -rf wordpress latest.zip
-  - chown -R www-data:www-data /var/www/html
-  - find /var/www/html -type d -exec chmod 755 {} \;
-  - find /var/www/html -type f -exec chmod 644 {} \;
-
-  - ln -sf /etc/nginx/sites-available/wordpress /etc/nginx/sites-enabled/wordpress
-  - rm -f /etc/nginx/sites-enabled/default
-  - systemctl enable --now nginx
-  - systemctl enable --now php-fpm || systemctl enable --now php8.1-fpm || systemctl enable --now php8.2-fpm || systemctl enable --now php8.3-fpm
-
-  # MariaDB + учётки из переменных
-  - systemctl enable --now mariadb
-  - mysql -e "CREATE DATABASE ${db_name} DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
-  - mysql -e "CREATE USER '${db_user}'@'localhost' IDENTIFIED BY '${db_pass}';"
-  - mysql -e "GRANT ALL PRIVILEGES ON ${db_name}.* TO '${db_user}'@'localhost'; FLUSH PRIVILEGES;"
-
-  # Преднастраиваем wp-config.php с теми же переменными
-  - cp -n /var/www/html/wp-config-sample.php /var/www/html/wp-config.php
-  - sed -i "s/database_name_here/${db_name}/" /var/www/html/wp-config.php
-  - sed -i "s/username_here/${db_user}/" /var/www/html/wp-config.php
-  - sed -i "s/password_here/${db_pass}/" /var/www/html/wp-config.php
-  - sed -i "s/localhost/${db_host}/" /var/www/html/wp-config.php
-
-  # Ключи соли
-  - bash -lc "curl -s https://api.wordpress.org/secret-key/1.1/salt/ > /tmp/wp.keys"
-  - sed -i "/AUTH_KEY/d;/SECURE_AUTH_KEY/d;/LOGGED_IN_KEY/d;/NONCE_KEY/d;/AUTH_SALT/d;/SECURE_AUTH_SALT/d;/LOGGED_IN_SALT/d;/NONCE_SALT/d" /var/www/html/wp-config.php
-  - awk '1;/^define..DB_COLLATE../{system(\"cat /tmp/wp.keys\")}' /var/www/html/wp-config.php > /var/www/html/wp-config.php.new
-  - mv /var/www/html/wp-config.php.new /var/www/html/wp-config.php
-  - chown www-data:www-data /var/www/html/wp-config.php
-  - chmod 640 /var/www/html/wp-config.php
-
-  - systemctl reload nginx
+  - [ bash, -lc, "/usr/local/bin/provision-wp.sh 2>&1 | tee -a /var/log/provision-wp.log" ]
