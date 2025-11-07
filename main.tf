@@ -85,8 +85,14 @@ resource "aws_instance" "web" {
   key_name                    = "nik3n-key" # замени, если ключ у тебя называется иначе
 
   # Подключаем cloud-init (User Data) из файла
-  user_data                   = file("${path.module}/cloud-init.yaml")
+  user_data = templatefile("${path.module}/cloud-init.tmpl.yaml", {
+    db_name = var.db_name
+    db_user = var.db_user
+    db_pass = var.db_pass
+    db_host = var.db_host
+  })
   user_data_replace_on_change = true
+
 
   tags = {
     Name = "nik3n-wp-server"
