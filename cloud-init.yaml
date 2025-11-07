@@ -1,10 +1,46 @@
 #cloud-config
+package_update: true
+package_upgrade: false
 packages:
   - nginx
   - unzip
   - curl
+  - php-fpm
+  - php-mysql
+  - php-xml
+  - php-curl
+  - php-zip
+  - php-mbstring
+
+write_files:
+  - path: /etc/nginx/sites-available/wordpress
+    owner: root:root
+    permissions: '0644'
+    content: |
+      server {
+          listen 80 default_server;
+          listen [::]:80 default_server;
+          server_name _;
+          root /var/www/html;
+          index index.php index.html;
+
+          location / {
+              try_files $uri $uri/ /index.php?$args;
+          }
+
+          location ~ \.php$ {
+              include snippets/fastcgi-php.conf;
+              # универсальный сокет (у тебя он есть): /run/php/php-fpm.sock
+              fastcgi_pass unix:/run/php/php-fpm.sock;
+          }
+
+          location ~* \.(?:htaccess|git) {
+              deny all;
+          }
+      }
 
 runcmd:
+  # Разворачиваем WordPress
   - mkdir -p /var/www/html
   - cd /var/www/html
   - curl -LO https://wordpress.org/latest.zip
@@ -14,3 +50,14 @@ runcmd:
   - chown -R www-data:www-data /var/www/html
   - find /var/www/html -type d -exec chmod 755 {} \;
   - find /var/www/html -type f -exec chmod 644 {} \;
+
+  # Активируем сайт и nginx, отключаем дефолт
+  - ln -sf /etc/nginx/sites-available/wordpress /etc/nginx/sites-enabled/wordpress
+  - rm -f /etc/nginx/sites-enabled/default
+  - systemctl enable --now nginx
+
+  # Включаем PHP-FPM (с подстраховкой по версиям)
+  - systemctl enable --now php-fpm || systemctl enable --now php8.1-fpm || systemctl enable --now php8.2-fpm || systemctl enable --now php8.3-fpm
+
+  # Перегружаем nginx
+  - systemctl reload nginx
